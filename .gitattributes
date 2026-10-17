@@ -1,0 +1,2 @@
+# Normalize line endings so clones on any OS match the published tree.
+* text=auto eol=lf

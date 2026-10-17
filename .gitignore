@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Logs and diagnostics
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build output (this plugin is plain JS, so there should be none)
+dist/
+*.tgz
