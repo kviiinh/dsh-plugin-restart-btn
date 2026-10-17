@@ -5,13 +5,24 @@
 
 ## 安装
 
-```bash
-# 作为 bundle 安装（插件管理器 install_bundle，target 指向本目录）
-# 或本地链接：
-pnpm add "link:C:/path/to/dsh-plugin-restart-btn"
+在 DSH 的插件管理器里安装一个 bundle，spec 直接填 GitHub 地址即可：
+
+```
+github:kviiinh/dsh-plugin-restart-btn
 ```
 
-安装后需**刷新页面（F5）**，Client bundle 只在页面启动时注入。
+安装后**重启 DSH**（退出应用再打开）即可看到按钮。
+
+> **为什么需要重启，而不是刷新页面**
+>
+> 插件由两部分组成：Host 半边在 DSH 的 Host 进程里运行，Client 半边（按钮 UI）
+> 只在页面启动时通过 `__DSH_BOOT__` 注入。
+>
+> **DSH 桌面端没有页面刷新快捷键**：它的 Windows 应用菜单只注册了开发者工具
+> （F12），`role: "reload"` 与 `F5`/`Ctrl+R` 都只存在于开发模式分支，打包版
+> 全部不可用。而重启 DSH 会同时重新加载 Host 插件和页面，是最可靠的生效方式。
+>
+> 装好这个插件之后，你还可以直接点那个「重启」按钮完成同样的操作。
 
 ## 前置条件
 
