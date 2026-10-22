@@ -21,6 +21,7 @@
   "files": [
     "index.js",
     "restart-host.js",
+    "graceful-quit.ps1",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",

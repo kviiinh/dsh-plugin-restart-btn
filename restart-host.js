@@ -5,21 +5,35 @@
  * half, so it runs outside the app's process tree and survives the app exiting.
  * Its job is:
  *
- *  1. terminate the Electron main process;
+ *  1. ask the Electron main process to quit through its own quit path, and
+ *     terminate it when it will not;
  *  2. wait until the app is gone (a new launch would lose the single-instance
  *     lock otherwise, and simply be discarded);
  *  3. start the app executable again, then exit.
  *
- * Three hazards shape this implementation, each learned the hard way:
+ * Step 1 is the interesting one. The tray's own quit button calls `app.quit()`
+ * inside the Electron main process, which runs the shell's quit path: it closes
+ * the Host over IPC and removes the tray icon. Nothing outside that process can
+ * call `app.quit()`, so the next best thing is the notification Windows sends
+ * to a window when the session is ending. The shell listens for it and marks
+ * the session as ending, which makes the next close of its window a real close
+ * instead of a hide-to-tray. `graceful-quit.ps1` posts that notification and
+ * then the close, so the shell quits itself: no stale tray icon left behind,
+ * the Host stops over its normal shutdown, and the quit is recorded. When that
+ * does not happen the process is terminated, which is what this script always
+ * did before.
+ *
+ * Hazards learned the hard way, which shape the implementation:
  *
  *  - **Never tree-kill the process that contains this relauncher.** The
  *    relauncher is spawned by the Host, which is a child of the Electron main
  *    process, so `taskkill /PID <main> /T /F` would kill the relauncher too —
  *    leaving the user with no window and nothing to start it again. Quitting
  *    therefore targets specific pids and never recurses into children.
- *  - **Never ask a window to close.** A plain `taskkill` sends WM_CLOSE, which
- *    the shell routes through its quit-confirmation flow (a modal dialog nobody
- *    can click here), so the window sat there until the timeout expired.
+ *  - **Never send a bare `WM_CLOSE` and expect a quit.** The shell treats it as
+ *    the user closing the window and hides to the tray instead, unless it has
+ *    already been told the session is ending — the reason the close is only
+ *    posted by `graceful-quit.ps1`, after the session-end notification.
  *  - **Terminate the main process before the Host.** The shell treats any Host
  *    exit it did not request as fatal and reports it, so stopping the Host first
  *    flashed an "application stopped" dialog on every restart.
@@ -31,10 +45,17 @@
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, statSync, truncateSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** Where this relauncher records what it did. */
 const LOG = join(tmpdir(), 'dsh-restart.log')
+
+/** This script's directory, which also holds the session-end helper. */
+const HERE = dirname(fileURLToPath(import.meta.url))
+
+/** The helper that delivers the session-end notification and the close. */
+const GRACE_SCRIPT = join(HERE, 'graceful-quit.ps1')
 
 /** Start a fresh log once the previous one grows past this size. */
 const LOG_MAX_BYTES = 256 * 1024
@@ -164,10 +185,73 @@ async function hardKill(pid) {
 }
 
 /**
- * Sleep for a number of milliseconds.
- * @param ms - duration to wait.
- * @returns a promise resolved after the wait.
+ * Ask the shell to quit the way its tray menu does.
+ *
+ * `graceful-quit.ps1` posts the session-end notification to the shell's window
+ * and then closes it, which is the only route to `app.quit()` open to a process
+ * outside the Electron main process. The request is best effort: a shell that
+ * ignores it is terminated by the caller.
+ *
+ * Output is not captured — the helper appends its own diagnostics to the same
+ * log file — so this only needs the exit code.
+ *
+ * @param mainPid - the Electron main process that owns the window.
+ * @returns whether the helper ran to completion.
  */
+async function requestGracefulQuit(mainPid) {
+  if (!existsSync(GRACE_SCRIPT)) {
+    log(`session-end helper missing at ${GRACE_SCRIPT}`)
+    return false
+  }
+  return new Promise((resolvePromise) => {
+    let settled = false
+    /** Resolve once, ignoring later callbacks from an abandoned child. */
+    const settle = (value) => {
+      if (settled) return
+      settled = true
+      resolvePromise(value)
+    }
+    try {
+      const child = spawn(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy', 'Bypass',
+          '-File', GRACE_SCRIPT,
+          '-TargetPid', String(mainPid),
+          '-Mode', 'quit',
+          '-LogPath', LOG,
+        ],
+        { windowsHide: true, stdio: 'ignore' },
+      )
+      const timer = setTimeout(() => {
+        log('session-end request did not finish; abandoning it')
+        try {
+          child.kill()
+        } catch {
+          // Already gone.
+        }
+        settle(false)
+      }, 15000)
+      child.on('error', (error) => {
+        clearTimeout(timer)
+        log(`session-end request failed to start: ${error.message}`)
+        settle(false)
+      })
+      child.on('close', (code) => {
+        clearTimeout(timer)
+        log(`session-end request exited with ${code}`)
+        settle(code === 0)
+      })
+    } catch (error) {
+      log(`session-end request threw: ${error.message}`)
+      settle(false)
+    }
+  })
+}
+
+
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 
 /** One polling interval while waiting for a process to exit. */
@@ -188,22 +272,28 @@ async function waitGone(pid, timeoutMs) {
   return !isAlive(pid)
 }
 
+/** How long the shell gets to quit by itself after the session-end request. */
+const GRACE_WAIT_MS = 10000
+
 /**
  * Stop the app, then let the caller start a fresh instance.
  *
- * The tray's quit is fast because it calls `app.quit()` inside the Electron main
- * process. From outside that process there is no way to reach `app.quit()`, and
- * a plain `taskkill` is worse than useless here: it sends WM_CLOSE, which the
- * shell routes through its quit-confirmation flow (`inspectQuit()` plus a modal
- * dialog). Nothing clicks that dialog, so the window sits there for the whole
- * timeout — the reason an earlier version appeared to hang.
+ * Preference order:
  *
- * The order matters more than the mechanism:
- *
- *  1. terminate the main process first;
- *  2. let the Host notice the dropped IPC channel and shut down by itself;
- *  3. only force the Host if it outlives its parent, when nothing is left to
+ *  1. ask the shell to quit through its own quit path (`requestGracefulQuit`);
+ *  2. if it is still running after `GRACE_WAIT_MS`, terminate the main process;
+ *  3. let the Host notice the dropped IPC channel and shut down by itself;
+ *  4. only force the Host when it outlives its parent, when nothing is left to
  *     report it.
+ *
+ * Step 1 makes the restart indistinguishable from the tray's quit: the shell
+ * runs `finishQuit()`, which disposes the tray icon (so no ghost icon is left
+ * for Explorer to clean up on the next hover), records the quit in the update
+ * journal and closes the Host over IPC. Steps 2-4 are the guaranteed fallback,
+ * and the only path when the shell ignores the session-end notification.
+ *
+ * Nothing here sends a bare `WM_CLOSE`: the shell reads that as the user closing
+ * the window and hides to the tray, so it would only burn the timeout.
  *
  * The shell treats any Host exit it did not request as fatal: its
  * `child.once('close')` calls `fail()` for every code, including 0, which opens
@@ -215,7 +305,7 @@ async function waitGone(pid, timeoutMs) {
  *
  * @param mainPid - the Electron main process pid (owns the window).
  * @param hostPid - the Host process pid, or undefined when unknown.
- * @returns whether the main process is gone.
+ * @returns whether the app is gone.
  */
 async function quitApp(mainPid, hostPid) {
   if (!isAlive(mainPid)) {
@@ -223,12 +313,19 @@ async function quitApp(mainPid, hostPid) {
     return true
   }
 
-  log(`terminating main process ${mainPid}`)
-  await hardKill(mainPid)
+  log(`asking main process ${mainPid} to quit through its session-end path`)
+  if (await requestGracefulQuit(mainPid)) {
+    if (await waitGone(mainPid, GRACE_WAIT_MS)) log(`main process ${mainPid} quit by itself`)
+    else log(`main process ${mainPid} ignored the session-end request`)
+  }
 
-  if (!(await waitGone(mainPid, 8000))) {
-    log(`main process ${mainPid} STILL alive after termination`)
-    return false
+  if (isAlive(mainPid)) {
+    log(`terminating main process ${mainPid}`)
+    await hardKill(mainPid)
+    if (!(await waitGone(mainPid, 8000))) {
+      log(`main process ${mainPid} STILL alive after termination`)
+      return false
+    }
   }
   log(`main process ${mainPid} exited`)
 
