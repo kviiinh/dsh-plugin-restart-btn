@@ -2,7 +2,25 @@ window.__ModuleLoader__.load({
   id: 'dsh-plugin-restart-btn',
   factory(require) {
     const React = require('react')
+    const ReactDOM = require('react-dom')
     const h = React.createElement
+
+    /**
+     * DSH's own tooltip primitive, when the page's module table provides it.
+     *
+     * The shipped sidebar row wraps its account trigger in this same primitive,
+     * so reusing it keeps the hover card here identical to the rest of the
+     * shell instead of the native Windows tooltip. The lookup is guarded: if a
+     * future build stops seeding the package the button keeps working and falls
+     * back to a `title` attribute.
+     */
+    const Tooltip = (() => {
+      try {
+        return require('@deepseek-ai/dsh-client-ui-primitives').Tooltip ?? null
+      } catch {
+        return null
+      }
+    })()
 
     /**
      * Text this plugin renders.
@@ -13,8 +31,8 @@ window.__ModuleLoader__.load({
      * throws — which fails the entry and aborts the whole page boot.
      */
     const ZH = {
-      restart: '重启',
-      restarting: '正在重启…',
+      restart: '重启 DeepSeek Harness',
+      restarting: '正在重启 DeepSeek Harness…',
       unavailable: '当前 DSH 实例无法自动重启。',
       confirmTitle: '重启 DeepSeek Harness？',
       confirmBody: '应用将完全退出并自动重新打开。正在进行的任务会被中断。',
@@ -23,8 +41,8 @@ window.__ModuleLoader__.load({
     }
 
     const EN = {
-      restart: 'Restart',
-      restarting: 'Restarting…',
+      restart: 'Restart DeepSeek Harness',
+      restarting: 'Restarting DeepSeek Harness…',
       unavailable: 'This DSH instance cannot restart itself.',
       confirmTitle: 'Restart DeepSeek Harness?',
       confirmBody: 'The app will close completely and reopen automatically. Running tasks will be interrupted.',
@@ -145,6 +163,27 @@ window.__ModuleLoader__.load({
 @keyframes dsh-restart-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+/*
+ * Inline variant: rendered into the footer's account row, beside the chip.
+ * That row is a flex line with an 8px gap and centered items, so the button
+ * only has to be its own square and push itself to the right edge.
+ */
+.dsh-restart-inline {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
+.dsh-restart-inline .dsh-restart-btn {
+  justify-content: center;
+  gap: 0;
+  width: 30px;
+  height: 30px;
+  margin: 0;
+  padding: 0;
+  border-radius: 9px;
 }
 
 /* ---- confirmation dialog ---- */
@@ -396,11 +435,66 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /** The live anchor of the footer row that holds the account chip. */
+    const ROW_ANCHOR = '[data-slot="settings.launcher"]'
+
+    /**
+     * The sidebar row that holds the account chip.
+     *
+     * The shipped settings area renders `div.triggerRow > (launcher slot,
+     * connection dot, update dot)` and offers no additive slot inside that row,
+     * so a normal sibling entry cannot sit beside the chip. The slot anchor
+     * itself is `display: contents`, which makes its parent element the flex
+     * row, so a portal into that element lines the button up with the chip
+     * without touching the owner's layout.
+     *
+     * The row is looked up after mount (and again when the sidebar changes
+     * width) because this entry and the settings area race during boot.
+     *
+     * @param active - whether the sidebar is wide enough for an inline button.
+     * @returns the row element, or null while it is not there.
+     */
+    function useSettingsRow(active) {
+      const [row, setRow] = React.useState(null)
+
+      React.useEffect(() => {
+        if (!active) {
+          setRow(null)
+          return undefined
+        }
+        let settled = false
+        const resolve = () => {
+          const anchor = document.querySelector(ROW_ANCHOR)
+          const parent = anchor?.parentElement ?? null
+          if (!(parent instanceof HTMLElement)) return
+          settled = true
+          setRow(parent)
+        }
+        resolve()
+        // The settings area may mount after this entry; watch until it is there,
+        // then stop watching so the observer cannot cost anything at runtime.
+        const observer = new MutationObserver(() => {
+          if (!settled) resolve()
+        })
+        observer.observe(document.body, { childList: true, subtree: true })
+        const timer = window.setTimeout(() => observer.disconnect(), 5000)
+        return () => {
+          observer.disconnect()
+          window.clearTimeout(timer)
+        }
+      }, [active])
+
+      return row
+    }
+
     /**
      * The sidebar-foot Restart action.
      *
      * Registers into the additive `sidebar.footer.action` list, so the shipped
      * entries beside it stay untouched. Only `wide` arrives from the slot owner.
+     * When the sidebar is wide the button is portalled into the account row and
+     * only the confirmation dialog stays at the slot position; in the collapsed
+     * rail the whole control stays in the slot, where it is the 36px target.
      *
      * @param props - the sidebar column state.
      * @returns the footer button plus its confirmation dialog.
@@ -470,47 +564,75 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const row = useSettingsRow(wide)
       const label = busy ? t.restarting : t.restart
+
+      const trigger = (...children) => {
+        const button = h(
+          'button',
+          {
+            type: 'button',
+            className: 'dsh-restart-btn',
+            'data-busy': busy,
+            disabled: busy,
+            // With the shell tooltip in place a native `title` would stack a
+            // second, differently styled hover card on top of it.
+            title: Tooltip === null ? label : undefined,
+            'aria-label': label,
+            onClick: () => {
+              setError(null)
+              setAsking(true)
+            },
+          },
+          ...children,
+        )
+        return Tooltip === null ? button : h(Tooltip, { label }, button)
+      }
+
+      const dialog = asking
+        ? h(ConfirmDialog, {
+            t,
+            busy,
+            error,
+            onConfirm: () => {
+              confirm().catch(() => void 0)
+            },
+            onCancel: dismiss,
+          })
+        : null
+
+      // Beside the account chip: the row already owns the 8px gap and the
+      // vertical centring, so the button only adds its own square wrapper.
+      if (wide && row !== null) {
+        return h(
+          React.Fragment,
+          null,
+          ReactDOM.createPortal(
+            h('span', { className: 'dsh-restart-inline' }, trigger(h(RestartIcon, { size: 16 }))),
+            row,
+          ),
+          dialog,
+        )
+      }
 
       // Mirrors the shipped footer button's DOM exactly:
       //   div.layer (+ .rail) > div.footerButtons > button.badge
       // The `footerButtons` row is what centres the icon in the rail, so
-      // omitting it shifts the label and breaks left alignment.
+      // omitting it shifts the label and breaks left alignment. This branch also
+      // covers a wide sidebar whose account row has not mounted yet, so the
+      // button never disappears while the row is being looked up.
       return h(
         'div',
         { className: wide ? 'dsh-restart-layer' : 'dsh-restart-layer dsh-restart-rail' },
         h(
           'div',
           { className: 'dsh-restart-footer-buttons' },
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'dsh-restart-btn',
-              'data-busy': busy,
-              disabled: busy,
-              title: label,
-              'aria-label': label,
-              onClick: () => {
-                setError(null)
-                setAsking(true)
-              },
-            },
+          trigger(
             h(RestartIcon, { size: wide ? 16 : 18 }),
             wide ? h('span', { className: 'dsh-restart-label' }, label) : null,
           ),
         ),
-        asking
-          ? h(ConfirmDialog, {
-              t,
-              busy,
-              error,
-              onConfirm: () => {
-                confirm().catch(() => void 0)
-              },
-              onCancel: dismiss,
-            })
-          : null,
+        dialog,
       )
     }
 
