@@ -251,11 +251,15 @@ window.__ModuleLoader__.load({
 `
 
     /**
-     * A circular arrow, drawn inline so the plugin needs no icon package.
+     * A power symbol: a ring broken by a gap at the top, with a stem rising
+     * through that gap. Drawn inline so the plugin needs no icon package, and
+     * stroked with `currentColor` so it follows both palettes.
      *
      * The shipped footer button asks its icon component for size 16 when the
      * sidebar is wide and 18 in the collapsed rail; matching that keeps the
-     * glyph weight identical in both states.
+     * glyph weight identical in both states. The geometry is kept in one
+     * 24-unit box and shared with `icon.svg`, so the package icon and the
+     * button glyph cannot drift apart.
      *
      * @param props - the glyph size in pixels.
      * @returns the icon markup.
@@ -263,19 +267,21 @@ window.__ModuleLoader__.load({
     function RestartIcon({ size }) {
       return h(
         'svg',
-        { viewBox: '0 0 16 16', width: size, height: size, 'aria-hidden': true, fill: 'none' },
+        { viewBox: '0 0 24 24', width: size, height: size, 'aria-hidden': true, fill: 'none' },
+        // Ring: radius 8 around (12, 12), gap of 62° centred on the top.
         h('path', {
-          d: 'M13 8a5 5 0 1 1-1.6-3.7',
+          d: 'M16.12 5.14A8 8 0 1 1 7.88 5.14',
           stroke: 'currentColor',
-          strokeWidth: '1.3',
+          strokeWidth: '2.66',
           strokeLinecap: 'round',
         }),
+        // Stem: same weight as the ring, running from above the ring down to
+        // just short of its centre.
         h('path', {
-          d: 'M12.4 2.2v3.3H9.1',
+          d: 'M12 2.81V10.89',
           stroke: 'currentColor',
-          strokeWidth: '1.3',
+          strokeWidth: '2.66',
           strokeLinecap: 'round',
-          strokeLinejoin: 'round',
         }),
       )
     }
