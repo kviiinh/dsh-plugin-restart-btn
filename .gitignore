@@ -15,3 +15,6 @@ Thumbs.db
 # Build output (this plugin is plain JS, so there should be none)
 dist/
 *.tgz
+
+# Archify working folder (candidate + evidence receipts)
+.archify/

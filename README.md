@@ -48,6 +48,25 @@ DeepSeek Harness.exe (主进程, 拥有窗口与单实例锁)
               └─ 重新启动 DeepSeek Harness.exe
 ```
 
+## 流程图
+
+![DSH 重启流程](docs/restart-flow.png)
+
+一次点击穿过四层：**侧边栏按钮 → Host 路由 → 独立重启器 → Electron 主进程**。
+
+1. **派发**：`client.js` 往 `/plugins-local/dsh-restart` 发 `{"action":"restart"}`；Host 半边确认
+   可执行文件与主进程 pid 后，`spawn` 一个 detached 的 `restart-host.js`，它脱离 DSH 进程树，
+   应用退出后仍然存活。
+2. **退出**：重启器调用 `graceful-quit.ps1` —— 先按（托盘宿主窗口 + 图标 id）用 `NIM_DELETE`
+   摘掉托盘图标，再向主窗口依次发 `WM_QUERYENDSESSION`、`WM_ENDSESSION`。
+3. **收尾**：DSH 收到会话结束通知后，Chromium 在 100 ms 内拆掉全部窗口并让主进程自行退出
+   （退出码 0）；Host 通过 IPC 断连自行 `shutdown(0)`，会话与任务数据不受影响。
+4. **拉起**：重启器确认主进程与 Host 都已消失，再重新启动 `DeepSeek Harness.exe`。
+
+`强制结束`（`taskkill /F`，单 pid、绝不带 `/T`）只在等待 10 秒仍未退出时执行，是兜底而不是主路径。
+
+> 另有[交互式版本](docs/restart-flow.html)：可缩放、切换深浅色、按步骤聚焦。
+
 ## 架构：Client 与 Host 如何通信
 
 Client 半边**不**使用 `host.call` —— 那个入口只属于沙箱化的动态包（dynamic
