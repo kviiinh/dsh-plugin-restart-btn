@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="64" height="64" role="img" aria-label="Restart" fill="none">
+  <!-- Power symbol. Same geometry as RestartIcon in client.js: ring of radius 8
+       around (12, 12) with a 62° gap at the top, plus a stem through the gap.
+       currentColor resolves to black in a standalone file and inherits when the
+       SVG is inlined. -->
+  <path d="M16.12 5.14A8 8 0 1 1 7.88 5.14" stroke="currentColor" stroke-width="2.66" stroke-linecap="round"/>
+  <path d="M12 2.81V10.89" stroke="currentColor" stroke-width="2.66" stroke-linecap="round"/>
+</svg>
